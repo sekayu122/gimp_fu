@@ -8,6 +8,16 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GimpUi, Gtk, Pango
 
 
+COLOR_TEMPERATURE_PRESETS = (
+    ("晴れた日の外", 5500.0, 6500.0),
+    ("薄曇りの外", 6250.0, 7250.0),
+    ("曇りの日の外", 7000.0, 8000.0),
+    ("晴れた日の日陰", 8000.0, 9000.0),
+)
+
+DEFAULT_COLOR_TEMPERATURE_PRESET = 1
+
+
 class MessageDialog(GimpUi.Dialog):
     def __init__(self, title, role, message, default_response=None):
         super().__init__(use_header_bar=False, title=title, role=role)
@@ -48,6 +58,103 @@ class MessageDialog(GimpUi.Dialog):
         return label
 
 
+class SakuraSettingsDialog(GimpUi.Dialog):
+    """Sakura Retouchの簡単調整ダイアログ。"""
+
+    def __init__(self, title, role, initial_settings, on_settings_changed=None):
+        super().__init__(use_header_bar=False, title=title, role=role)
+
+        self.on_settings_changed = on_settings_changed
+        self.set_default_size(420, -1)
+        self.add_button("キャンセル", Gtk.ResponseType.CANCEL)
+        self.add_button("実行", Gtk.ResponseType.OK)
+        self.set_default_response(Gtk.ResponseType.OK)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        self.environment_combo = Gtk.ComboBoxText()
+        for name, _original, _intended in COLOR_TEMPERATURE_PRESETS:
+            self.environment_combo.append_text(name)
+        self.environment_combo.set_active(DEFAULT_COLOR_TEMPERATURE_PRESET)
+
+        self.original_temperature = Gtk.SpinButton.new_with_range(
+            1000.0, 12000.0, 100.0
+        )
+        self.original_temperature.set_digits(0)
+        self.intended_temperature = Gtk.SpinButton.new_with_range(
+            1000.0, 12000.0, 100.0
+        )
+        self.intended_temperature.set_digits(0)
+        self.gamma_gp = Gtk.SpinButton.new_with_range(0.10, 5.00, 0.01)
+        self.gamma_gp.set_digits(2)
+        self.white_clip = Gtk.SpinButton.new_with_range(0.01, 1.00, 0.01)
+        self.white_clip.set_digits(2)
+        self.black_lift = Gtk.SpinButton.new_with_range(0.00, 0.25, 0.01)
+        self.black_lift.set_digits(2)
+
+        self._attach_row(grid, 0, "撮影環境", self.environment_combo)
+        self._attach_row(grid, 1, "元の色温度 (K)", self.original_temperature)
+        self._attach_row(grid, 2, "仕上がり色温度 (K)", self.intended_temperature)
+        self._attach_row(grid, 3, "GMA GP", self.gamma_gp)
+        self._attach_row(grid, 4, "White Clip", self.white_clip)
+        self._attach_row(grid, 5, "Black Lift", self.black_lift)
+
+        self._on_environment_changed(self.environment_combo)
+        self.original_temperature.set_value(initial_settings["original_temperature"])
+        self.intended_temperature.set_value(initial_settings["intended_temperature"])
+        self.gamma_gp.set_value(initial_settings["gamma_gp"])
+        self.white_clip.set_value(initial_settings["white_clip"])
+        self.black_lift.set_value(initial_settings["black_lift"])
+
+        self.environment_combo.connect("changed", self._on_environment_changed)
+        for widget in (
+            self.original_temperature,
+            self.intended_temperature,
+            self.gamma_gp,
+            self.white_clip,
+            self.black_lift,
+        ):
+            widget.connect("value-changed", self._on_setting_changed)
+
+        box.pack_start(grid, True, True, 0)
+        self.get_content_area().add(box)
+        self.show_all()
+
+    def _attach_row(self, grid, row, text, widget):
+        label = Gtk.Label(label=text)
+        label.set_halign(Gtk.Align.START)
+        widget.set_hexpand(True)
+        grid.attach(label, 0, row, 1, 1)
+        grid.attach(widget, 1, row, 1, 1)
+
+    def _on_environment_changed(self, combo):
+        preset_index = combo.get_active()
+        if preset_index < 0:
+            return
+
+        _name, original, intended = COLOR_TEMPERATURE_PRESETS[preset_index]
+        self.original_temperature.set_value(original)
+        self.intended_temperature.set_value(intended)
+
+    def _on_setting_changed(self, _widget):
+        if self.on_settings_changed is not None:
+            self.on_settings_changed(self.get_settings())
+
+    def get_settings(self):
+        return {
+            "original_temperature": self.original_temperature.get_value(),
+            "intended_temperature": self.intended_temperature.get_value(),
+            "gamma_gp": self.gamma_gp.get_value(),
+            "white_clip": self.white_clip.get_value(),
+            "black_lift": self.black_lift.get_value(),
+        }
+
+
 def run_message_dialog( binary_name, title, role, message, default_response=None,):
     GimpUi.init(binary_name)
 
@@ -57,6 +164,7 @@ def run_message_dialog( binary_name, title, role, message, default_response=None
     dialog.destroy()
 
     return response
+
 
 def confirm_selected_layer(binary_name, proc_name, layer):
     """選択中のレイヤーで処理していいか確認するダイアログを表示する関数"""
@@ -70,3 +178,23 @@ def confirm_selected_layer(binary_name, proc_name, layer):
     )
 
     return response == Gtk.ResponseType.OK
+
+
+def run_sakura_settings_dialog(
+    binary_name, proc_name, initial_settings, on_settings_changed=None
+):
+    """簡単調整ダイアログを表示し、キャンセル時はNoneを返す。"""
+
+    GimpUi.init(binary_name)
+    dialog = SakuraSettingsDialog(
+        "Sakura Retouch - 画質調整",
+        proc_name,
+        initial_settings,
+        on_settings_changed,
+    )
+
+    response = dialog.run()
+    settings = dialog.get_settings() if response == Gtk.ResponseType.OK else None
+    dialog.destroy()
+
+    return settings

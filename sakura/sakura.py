@@ -15,8 +15,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from sekayu_common.dialog import confirm_selected_layer
-from sekayu_common.filter import apply_gegl_filter
+from sekayu_common.dialog import (
+    COLOR_TEMPERATURE_PRESETS,
+    DEFAULT_COLOR_TEMPERATURE_PRESET,
+    run_sakura_settings_dialog,
+)
+from sekayu_common.filter import add_filter, apply_gegl_filter, build_gamma_curve
 
 # GIMPに登録するprocedureの名前
 PROC_NAME = "plug-in-sakura"
@@ -24,22 +28,111 @@ PROC_NAME = "plug-in-sakura"
 # 実行ファイル名（UIの初期化用）
 BINARY_NAME = "sakura.py"
 
-HIGHKEY_GAMMA = 1.45
-HIGHKEY_CURVE_SAMPLES = 256
+DEFAULT_GAMMA_GP = 1.70
+DEFAULT_WHITE_CLIP = 0.85
+DEFAULT_BLACK_LIFT = 0.03
+GAMMA_CURVE_SAMPLES = 256
 
 
-def build_gamma_curve(gamma, samples):
-    """GMAカーブ用の明るめトーンカーブオブジェクトを作成する。"""
+def get_default_settings():
+    """非対話実行時に利用する初期設定を返す。"""
 
-    curve = Gimp.Curve.new()
-    curve.set_curve_type(Gimp.CurveType.FREE)
-    curve.set_n_samples(samples)
+    _name, original, intended = COLOR_TEMPERATURE_PRESETS[
+        DEFAULT_COLOR_TEMPERATURE_PRESET
+    ]
+    return {
+        "original_temperature": original,
+        "intended_temperature": intended,
+        "gamma_gp": DEFAULT_GAMMA_GP,
+        "white_clip": DEFAULT_WHITE_CLIP,
+        "black_lift": DEFAULT_BLACK_LIFT,
+    }
 
-    for i in range(samples):
-        x = i / (samples - 1)
-        curve.set_sample(x, x ** (1.0 / gamma))
 
-    return curve
+def create_effect_layer(image, source_layer, parent, name, insert_above=None):
+    """複製元のfxを焼き込み、新しいfxグループ用レイヤーを作成する。"""
+
+    layer = source_layer.copy()
+    layer.set_name(name)
+    insert_above = insert_above or source_layer
+    image.insert_layer(layer, parent, image.get_item_position(insert_above))
+    if layer.get_filters():
+        layer.merge_filters()
+    return layer
+
+
+def add_background_adjustments(layer, settings):
+    """背景色レイヤーへ画質調整フィルタを追加し、ライブ更新対象を返す。"""
+
+    curve = build_gamma_curve(
+        settings["gamma_gp"],
+        GAMMA_CURVE_SAMPLES,
+        white_point=settings["white_clip"],
+        black_lift=settings["black_lift"],
+    )
+    curve_filter = add_filter(layer, curve)
+
+    temperature_filter = apply_gegl_filter(
+        layer,
+        "gegl:color-temperature",
+        "Spring warm color temperature",
+        {
+            "original-temperature": settings["original_temperature"],
+            "intended-temperature": settings["intended_temperature"],
+        },
+        merge=False,
+    )
+    apply_gegl_filter(
+        layer,
+        "gimp:hue-saturation",
+        "Spring master hue saturation",
+        {
+            "range": Gimp.HueRange.ALL,
+            "hue": 0.0,
+            "lightness": 0.0,
+            "saturation": -5.0,
+            "overlap": 0.0,
+        },
+        merge=False,
+    )
+    apply_gegl_filter(
+        layer,
+        "gimp:hue-saturation",
+        "Spring green hue saturation",
+        {
+            "range": Gimp.HueRange.GREEN,
+            "hue": 0.0,
+            "lightness": 10.0,
+            "saturation": -25.0,
+            "overlap": 0.0,
+        },
+        merge=False,
+    )
+
+    return curve_filter, temperature_filter
+
+
+def update_background_preview(curve_filter, temperature_filter, settings):
+    """ダイアログの設定変更を背景色レイヤーへ即時反映する。"""
+
+    curve = build_gamma_curve(
+        settings["gamma_gp"],
+        GAMMA_CURVE_SAMPLES,
+        white_point=settings["white_clip"],
+        black_lift=settings["black_lift"],
+    )
+    curve_filter.get_config().set_property("curve", curve)
+    curve_filter.update()
+
+    temperature_config = temperature_filter.get_config()
+    temperature_config.set_property(
+        "original-temperature", settings["original_temperature"]
+    )
+    temperature_config.set_property(
+        "intended-temperature", settings["intended_temperature"]
+    )
+    temperature_filter.update()
+    Gimp.displays_flush()
 
 
 def run(procedure, run_mode, image, drawables, config, data):
@@ -83,7 +176,6 @@ def run(procedure, run_mode, image, drawables, config, data):
             GLib.Error(f"Procedure '{PROC_NAME}' works with layers only."),
         )
     parent = drawables[0].get_parent()
-    position = image.get_item_position(drawables[0])
     # 通常の呼び出し
     # if run_mode == Gimp.RunMode.INTERACTIVE:
     #     # 選択したレイヤーで処理していいか確認
@@ -96,74 +188,108 @@ def run(procedure, run_mode, image, drawables, config, data):
     # 処理対象レイヤー
     base_layer = drawables[0]
 
-    #################################
-    # レイヤー処理
-    #################################
-    
-    ### 1. 全体を明るくハイキーに ###
-    # GMAカーブで明るくしたレイヤーを通常合成で重ねる
-    bright_layer = base_layer.copy()
-    bright_layer.set_name("Highkey brightness")
-    image.insert_layer(bright_layer, parent, position)
+    settings = get_default_settings()
+    image.undo_group_start()
+    try:
 
-    highkey_curve = build_gamma_curve(HIGHKEY_GAMMA, HIGHKEY_CURVE_SAMPLES)
-    highkey_filter = Gimp.DrawableFilter.new(bright_layer, "gimp:curves", "Highkey GMA curve")
-    highkey_config = highkey_filter.get_config()
-    highkey_config.set_property("curve", highkey_curve)
-    highkey_config.set_property("channel", Gimp.HistogramChannel.VALUE)
-    highkey_config.set_property("trc", Gimp.TRCType.NON_LINEAR)
-    bright_layer.append_filter(highkey_filter)
+        #################################
+        # レイヤー処理
+        #################################
 
-    bright_layer.set_mode(Gimp.LayerMode.NORMAL)
-    bright_layer.set_opacity(25.0) # 不透明度
-    
-    ### 2. ふわっとした桜の光 ###
-    # Gaussioan Blurでぼかしたレイヤーを作成
-    glow_layer = base_layer.copy()
-    glow_layer.set_name("Soft sakura glow")
-    image.insert_layer(glow_layer, base_layer.get_parent(), image.get_item_position(bright_layer))
+        ### 01. 背景の明るさと春らしい色味をまとめて調整 ###
+        background_color_layer = create_effect_layer(
+            image, base_layer, parent, "01 Background color"
+        )
+        curve_filter, temperature_filter = add_background_adjustments(
+            background_color_layer, settings
+        )
+        Gimp.displays_flush()
 
-    apply_gegl_filter(
-        glow_layer,
-        "gegl:focus-blur",
-        "Soft focus glow blur",
-        {
-            "blur-type": "lens",
-            "blur-radius": 34.0,
-            "x": 0.5,
-            "y": 0.5,
-            "radius": 0.62,
-            "focus": 0.16,
-            "midpoint": 0.32,
-            "highlight-factor": 1.7,
-            "highlight-threshold-low": 0.72,
-            "highlight-threshold-high": 1.0,
-        },
-        merge=False,
-    )
+        if run_mode == Gimp.RunMode.INTERACTIVE:
+            settings = run_sakura_settings_dialog(
+                BINARY_NAME,
+                PROC_NAME,
+                settings,
+                lambda changed_settings: update_background_preview(
+                    curve_filter, temperature_filter, changed_settings
+                ),
+            )
+            if settings is None:
+                image.remove_layer(background_color_layer)
+                Gimp.displays_flush()
+                return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, None)
 
-    glow_layer.set_mode(Gimp.LayerMode.SCREEN)
-    glow_layer.set_opacity(20.0)
+        ### 02. 焦点ぼかしで背景を少しだけ溶かす ###
+        background_blur_layer = create_effect_layer(
+            image,
+            background_color_layer,
+            parent,
+            "02 Background blur - add inverse subject mask",
+        )
+        apply_gegl_filter(
+            background_blur_layer,
+            "gegl:focus-blur",
+            "Background gentle focus blur",
+            {
+                "blur-type": "lens",
+                "blur-radius": 16.0,
+                "x": 0.5,
+                "y": 0.5,
+                "radius": 0.7,
+                "focus": 0.25,
+                "midpoint": 0.45,
+                "highlight-factor": 1.15,
+                "highlight-threshold-low": 0.8,
+                "highlight-threshold-high": 1.0,
+            },
+            merge=False
+        )
+        background_blur_layer.set_mode(Gimp.LayerMode.SOFTLIGHT)
+        background_blur_layer.set_opacity(20.0)
 
-    ### 3. 青空を青く戻す ###
-    sky_layer = base_layer.copy()
-    sky_layer.set_name("Blue sky restore")
-    image.insert_layer(sky_layer, base_layer.get_parent(), image.get_item_position(glow_layer))
+        ### 03. 露出を上げて人物を浮かせる ###
+        subject_layer = create_effect_layer(
+            image,
+            background_color_layer,
+            parent,
+            "03 Subject lift - add foreground mask",
+            insert_above=background_blur_layer,
+        )
+        apply_gegl_filter(
+            subject_layer,
+            "gegl:exposure",
+            "Subject lift exposure",
+            { "exposure": 0.35, },
+            merge=False,
+        )
+        subject_layer.set_mode(Gimp.LayerMode.NORMAL)
+        subject_layer.set_opacity(100.0)
 
-    apply_gegl_filter(
-        sky_layer,
-        "gegl:hue-chroma",
-        "Blue sky boost",
-        { "hue": 0.0, "chroma": 20.0, "lightness": -8.0, },
-        merge=False,
-    )
+        ### 04. ガウスぼかしとスクリーン合成で光をふわっとさせる ###
+        light_layer = create_effect_layer(
+            image,
+            background_color_layer,
+            parent,
+            "04 Sakura light",
+            insert_above=subject_layer,
+        )
+        apply_gegl_filter(
+            light_layer,
+            "gegl:gaussian-blur",
+            "Soft glow gaussian blur",
+            { "std-dev-x": 18.0, "std-dev-y": 18.0, },
+            merge=False,
+        )
+        light_layer.set_mode(Gimp.LayerMode.SCREEN)
+        light_layer.set_opacity(20.0)
+    except Exception as error:
+        return procedure.new_return_values(
+            Gimp.PDBStatusType.EXECUTION_ERROR,
+            GLib.Error(f"Procedure '{PROC_NAME}' failed: {error}"),
+        )
+    finally:
+        image.undo_group_end()
 
-    sky_layer.set_mode(Gimp.LayerMode.NORMAL)
-    sky_layer.set_opacity(20.0)
-    
-
-    ### 処理終了 ###
-    image.undo_group_end()
     Gimp.displays_flush()
 
     return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, None)
