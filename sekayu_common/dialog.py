@@ -65,7 +65,7 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         super().__init__(use_header_bar=False, title=title, role=role)
 
         self.on_settings_changed = on_settings_changed
-        self.set_default_size(420, -1)
+        self.set_default_size(640, -1)
         self.add_button("キャンセル", Gtk.ResponseType.CANCEL)
         self.add_button("実行", Gtk.ResponseType.OK)
         self.set_default_response(Gtk.ResponseType.OK)
@@ -82,27 +82,28 @@ class SakuraSettingsDialog(GimpUi.Dialog):
             self.environment_combo.append_text(name)
         self.environment_combo.set_active(DEFAULT_COLOR_TEMPERATURE_PRESET)
 
-        self.original_temperature = Gtk.SpinButton.new_with_range(
-            1000.0, 12000.0, 100.0
+        original_temperature_control, self.original_temperature = (
+            self._create_numeric_control(1000.0, 12000.0, 100.0, 0)
         )
-        self.original_temperature.set_digits(0)
-        self.intended_temperature = Gtk.SpinButton.new_with_range(
-            1000.0, 12000.0, 100.0
+        intended_temperature_control, self.intended_temperature = (
+            self._create_numeric_control(1000.0, 12000.0, 100.0, 0)
         )
-        self.intended_temperature.set_digits(0)
-        self.gamma_gp = Gtk.SpinButton.new_with_range(0.10, 5.00, 0.01)
-        self.gamma_gp.set_digits(2)
-        self.white_clip = Gtk.SpinButton.new_with_range(0.01, 1.00, 0.01)
-        self.white_clip.set_digits(2)
-        self.black_lift = Gtk.SpinButton.new_with_range(0.00, 0.25, 0.01)
-        self.black_lift.set_digits(2)
+        gamma_gp_control, self.gamma_gp = self._create_numeric_control(
+            0.10, 5.00, 0.01, 2
+        )
+        white_clip_control, self.white_clip = self._create_numeric_control(
+            0.01, 1.00, 0.01, 2
+        )
+        black_lift_control, self.black_lift = self._create_numeric_control(
+            0.00, 0.25, 0.01, 2
+        )
 
         self._attach_row(grid, 0, "撮影環境", self.environment_combo)
-        self._attach_row(grid, 1, "元の色温度 (K)", self.original_temperature)
-        self._attach_row(grid, 2, "仕上がり色温度 (K)", self.intended_temperature)
-        self._attach_row(grid, 3, "GMA GP", self.gamma_gp)
-        self._attach_row(grid, 4, "White Clip", self.white_clip)
-        self._attach_row(grid, 5, "Black Lift", self.black_lift)
+        self._attach_row(grid, 1, "元の色温度 (K)", original_temperature_control)
+        self._attach_row(grid, 2, "仕上がり色温度 (K)", intended_temperature_control)
+        self._attach_row(grid, 3, "GMA GP", gamma_gp_control)
+        self._attach_row(grid, 4, "White Clip", white_clip_control)
+        self._attach_row(grid, 5, "Black Lift", black_lift_control)
 
         self._on_environment_changed(self.environment_combo)
         self.original_temperature.set_value(initial_settings["original_temperature"])
@@ -124,6 +125,29 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         box.pack_start(grid, True, True, 0)
         self.get_content_area().add(box)
         self.show_all()
+
+    def _create_numeric_control(self, lower, upper, step, digits):
+        adjustment = Gtk.Adjustment(
+            value=lower,
+            lower=lower,
+            upper=upper,
+            step_increment=step,
+            page_increment=step * 10,
+            page_size=0.0,
+        )
+
+        scale = Gtk.Scale.new(Gtk.Orientation.HORIZONTAL, adjustment)
+        scale.set_draw_value(False)
+        scale.set_hexpand(True)
+
+        spin = Gtk.SpinButton.new(adjustment, step, digits)
+        spin.set_numeric(True)
+        spin.set_width_chars(7)
+
+        control = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        control.pack_start(scale, True, True, 0)
+        control.pack_start(spin, False, False, 0)
+        return control, spin
 
     def _attach_row(self, grid, row, text, widget):
         label = Gtk.Label(label=text)
