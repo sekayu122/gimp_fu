@@ -28,10 +28,15 @@ PROC_NAME = "plug-in-sakura"
 # 実行ファイル名（UIの初期化用）
 BINARY_NAME = "sakura.py"
 
-DEFAULT_GAMMA_GP = 1.70
+DEFAULT_GAMMA_GP = 1.50
 DEFAULT_WHITE_CLIP = 0.85
 DEFAULT_BLACK_LIFT = 0.03
 GAMMA_CURVE_SAMPLES = 256
+DEFAULT_DETAIL_ENHANCE_SETTINGS = {
+    "std-dev": 1.2,
+    "scale": 0.35,
+    "threshold": 0.02,
+}
 DEFAULT_FOCUS_BLUR_SETTINGS = {
     "blur_radius": 40.0,
     "x": 0.5,
@@ -42,7 +47,7 @@ DEFAULT_FOCUS_BLUR_SETTINGS = {
     "highlight_factor": 0.5,
     "highlight_threshold_low": 0.8,
     "highlight_threshold_high": 1.0,
-    "opacity": 80.0,
+    "opacity": 60.0,
 }
 
 
@@ -120,30 +125,45 @@ def add_background_adjustments(layer, settings):
         },
         merge=False,
     )
-
     return curve_filter, temperature_filter
 
 
-def update_background_preview(curve_filter, temperature_filter, settings):
-    """ダイアログの設定変更を背景色レイヤーへ即時反映する。"""
+def add_detail_enhance(layer):
+    """確定後の背景色レイヤーへ細部強調フィルターを追加する。"""
 
-    curve = build_gamma_curve(
-        settings["gamma_gp"],
-        GAMMA_CURVE_SAMPLES,
-        white_point=settings["white_clip"],
-        black_lift=settings["black_lift"],
+    apply_gegl_filter(
+        layer,
+        "gegl:unsharp-mask",
+        "Spring detail enhance",
+        DEFAULT_DETAIL_ENHANCE_SETTINGS,
+        merge=False,
     )
-    curve_filter.get_config().set_property("curve", curve)
-    curve_filter.update()
 
-    temperature_config = temperature_filter.get_config()
-    temperature_config.set_property(
-        "original-temperature", settings["original_temperature"]
-    )
-    temperature_config.set_property(
-        "intended-temperature", settings["intended_temperature"]
-    )
-    temperature_filter.update()
+
+def update_background_preview(
+    curve_filter, temperature_filter, settings, setting_name
+):
+    """変更された項目に対応する背景フィルターだけを更新する。"""
+
+    if setting_name in {"gamma_gp", "white_clip", "black_lift"}:
+        curve = build_gamma_curve(
+            settings["gamma_gp"],
+            GAMMA_CURVE_SAMPLES,
+            white_point=settings["white_clip"],
+            black_lift=settings["black_lift"],
+        )
+        curve_filter.get_config().set_property("curve", curve)
+        curve_filter.update()
+    elif setting_name in {"original_temperature", "intended_temperature"}:
+        temperature_config = temperature_filter.get_config()
+        temperature_config.set_property(
+            "original-temperature", settings["original_temperature"]
+        )
+        temperature_config.set_property(
+            "intended-temperature", settings["intended_temperature"]
+        )
+        temperature_filter.update()
+
     Gimp.displays_flush()
 
 
@@ -170,6 +190,38 @@ def add_focus_blur(layer, settings):
     )
     layer.set_mode(Gimp.LayerMode.SOFTLIGHT)
     layer.set_opacity(settings["opacity"])
+
+
+def create_derived_effect_layers(image, background_color_layer, parent):
+    """背景色レイヤーから、ぼかしと光の派生レイヤーを作成する。"""
+
+    background_blur_layer = create_effect_layer(
+        image,
+        background_color_layer,
+        parent,
+        "02 Background blur",
+    )
+    focus_blur_settings = DEFAULT_FOCUS_BLUR_SETTINGS.copy()
+    add_focus_blur(background_blur_layer, focus_blur_settings)
+
+    light_layer = create_effect_layer(
+        image,
+        background_color_layer,
+        parent,
+        "03 soft glow(gauussian + screen)",
+        insert_above=background_blur_layer,
+    )
+    apply_gegl_filter(
+        light_layer,
+        "gegl:gaussian-blur",
+        "Soft glow gaussian blur",
+        {"std-dev-x": 18.0, "std-dev-y": 18.0},
+        merge=False,
+    )
+    light_layer.set_mode(Gimp.LayerMode.SCREEN)
+    light_layer.set_opacity(10.0)
+
+    return [background_blur_layer, light_layer]
 
 
 def run(procedure, run_mode, image, drawables, config, data):
@@ -240,6 +292,14 @@ def run(procedure, run_mode, image, drawables, config, data):
         curve_filter, temperature_filter = add_background_adjustments(
             background_color_layer, settings
         )
+
+        if run_mode != Gimp.RunMode.INTERACTIVE:
+            add_detail_enhance(background_color_layer)
+
+        ### 02・03. 軽量プレビューを作ってから画質調整ダイアログを表示 ###
+        derived_layers = create_derived_effect_layers(
+            image, background_color_layer, parent
+        )
         Gimp.displays_flush()
 
         if run_mode == Gimp.RunMode.INTERACTIVE:
@@ -247,42 +307,28 @@ def run(procedure, run_mode, image, drawables, config, data):
                 BINARY_NAME,
                 PROC_NAME,
                 settings,
-                lambda changed_settings: update_background_preview(
-                    curve_filter, temperature_filter, changed_settings
+                lambda changed_settings, setting_name: update_background_preview(
+                    curve_filter,
+                    temperature_filter,
+                    changed_settings,
+                    setting_name,
                 ),
             )
             if settings is None:
+                for layer in reversed(derived_layers):
+                    image.remove_layer(layer)
                 image.remove_layer(background_color_layer)
                 Gimp.displays_flush()
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, None)
 
-        ### 02. 焦点ぼかしで背景を少しだけ溶かす ###
-        background_blur_layer = create_effect_layer(
-            image,
-            background_color_layer,
-            parent,
-            "02 Background blur",
-        )
-        focus_blur_settings = DEFAULT_FOCUS_BLUR_SETTINGS.copy()
-        add_focus_blur(background_blur_layer, focus_blur_settings)
+            add_detail_enhance(background_color_layer)
 
-        ### 03. ガウスぼかしとスクリーン合成で光をふわっとさせる ###
-        light_layer = create_effect_layer(
-            image,
-            background_color_layer,
-            parent,
-            "03 Sakura light",
-            insert_above=background_blur_layer,
-        )
-        apply_gegl_filter(
-            light_layer,
-            "gegl:gaussian-blur",
-            "Soft glow gaussian blur",
-            { "std-dev-x": 18.0, "std-dev-y": 18.0, },
-            merge=False,
-        )
-        light_layer.set_mode(Gimp.LayerMode.SCREEN)
-        light_layer.set_opacity(20.0)
+            # プレビュー中は重い派生処理を行わず、確定後に一度だけ作り直す。
+            for layer in reversed(derived_layers):
+                image.remove_layer(layer)
+            derived_layers[:] = create_derived_effect_layers(
+                image, background_color_layer, parent
+            )
     except Exception as error:
         return procedure.new_return_values(
             Gimp.PDBStatusType.EXECUTION_ERROR,

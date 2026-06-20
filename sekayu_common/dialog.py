@@ -113,14 +113,16 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         self.black_lift.set_value(initial_settings["black_lift"])
 
         self.environment_combo.connect("changed", self._on_environment_changed)
-        for widget in (
-            self.original_temperature,
-            self.intended_temperature,
-            self.gamma_gp,
-            self.white_clip,
-            self.black_lift,
+        for widget, setting_name in (
+            (self.original_temperature, "original_temperature"),
+            (self.intended_temperature, "intended_temperature"),
+            (self.gamma_gp, "gamma_gp"),
+            (self.white_clip, "white_clip"),
+            (self.black_lift, "black_lift"),
         ):
-            widget.connect("value-changed", self._on_setting_changed)
+            widget.connect(
+                "value-changed", self._on_setting_changed, setting_name
+            )
 
         box.pack_start(grid, True, True, 0)
         self.get_content_area().add(box)
@@ -165,9 +167,9 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         self.original_temperature.set_value(original)
         self.intended_temperature.set_value(intended)
 
-    def _on_setting_changed(self, _widget):
+    def _on_setting_changed(self, _widget, setting_name):
         if self.on_settings_changed is not None:
-            self.on_settings_changed(self.get_settings())
+            self.on_settings_changed(self.get_settings(), setting_name)
 
     def get_settings(self):
         return {
