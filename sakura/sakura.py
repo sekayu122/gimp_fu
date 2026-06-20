@@ -32,6 +32,18 @@ DEFAULT_GAMMA_GP = 1.70
 DEFAULT_WHITE_CLIP = 0.85
 DEFAULT_BLACK_LIFT = 0.03
 GAMMA_CURVE_SAMPLES = 256
+DEFAULT_FOCUS_BLUR_SETTINGS = {
+    "blur_radius": 40.0,
+    "x": 0.5,
+    "y": 0.5,
+    "radius": 0.7,
+    "focus": 0.25,
+    "midpoint": 0.45,
+    "highlight_factor": 0.5,
+    "highlight_threshold_low": 0.8,
+    "highlight_threshold_high": 1.0,
+    "opacity": 80.0,
+}
 
 
 def get_default_settings():
@@ -135,6 +147,31 @@ def update_background_preview(curve_filter, temperature_filter, settings):
     Gimp.displays_flush()
 
 
+def add_focus_blur(layer, settings):
+    """背景ぼかしレイヤーへ焦点ぼかしフィルタを追加する。"""
+
+    apply_gegl_filter(
+        layer,
+        "gegl:focus-blur",
+        "Background gentle focus blur",
+        {
+            "blur-type": "lens",
+            "blur-radius": settings["blur_radius"],
+            "x": settings["x"],
+            "y": settings["y"],
+            "radius": settings["radius"],
+            "focus": settings["focus"],
+            "midpoint": settings["midpoint"],
+            "highlight-factor": settings["highlight_factor"],
+            "highlight-threshold-low": settings["highlight_threshold_low"],
+            "highlight-threshold-high": settings["highlight_threshold_high"],
+        },
+        merge=False,
+    )
+    layer.set_mode(Gimp.LayerMode.SOFTLIGHT)
+    layer.set_opacity(settings["opacity"])
+
+
 def run(procedure, run_mode, image, drawables, config, data):
     """
     GIMPのprocedureが呼び出されたときに実行される関数
@@ -224,54 +261,18 @@ def run(procedure, run_mode, image, drawables, config, data):
             image,
             background_color_layer,
             parent,
-            "02 Background blur - add inverse subject mask",
+            "02 Background blur",
         )
-        apply_gegl_filter(
-            background_blur_layer,
-            "gegl:focus-blur",
-            "Background gentle focus blur",
-            {
-                "blur-type": "lens",
-                "blur-radius": 16.0,
-                "x": 0.5,
-                "y": 0.5,
-                "radius": 0.7,
-                "focus": 0.25,
-                "midpoint": 0.45,
-                "highlight-factor": 1.15,
-                "highlight-threshold-low": 0.8,
-                "highlight-threshold-high": 1.0,
-            },
-            merge=False
-        )
-        background_blur_layer.set_mode(Gimp.LayerMode.SOFTLIGHT)
-        background_blur_layer.set_opacity(20.0)
+        focus_blur_settings = DEFAULT_FOCUS_BLUR_SETTINGS.copy()
+        add_focus_blur(background_blur_layer, focus_blur_settings)
 
-        ### 03. 露出を上げて人物を浮かせる ###
-        subject_layer = create_effect_layer(
-            image,
-            background_color_layer,
-            parent,
-            "03 Subject lift - add foreground mask",
-            insert_above=background_blur_layer,
-        )
-        apply_gegl_filter(
-            subject_layer,
-            "gegl:exposure",
-            "Subject lift exposure",
-            { "exposure": 0.35, },
-            merge=False,
-        )
-        subject_layer.set_mode(Gimp.LayerMode.NORMAL)
-        subject_layer.set_opacity(100.0)
-
-        ### 04. ガウスぼかしとスクリーン合成で光をふわっとさせる ###
+        ### 03. ガウスぼかしとスクリーン合成で光をふわっとさせる ###
         light_layer = create_effect_layer(
             image,
             background_color_layer,
             parent,
-            "04 Sakura light",
-            insert_above=subject_layer,
+            "03 Sakura light",
+            insert_above=background_blur_layer,
         )
         apply_gegl_filter(
             light_layer,
