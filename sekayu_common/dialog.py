@@ -97,6 +97,7 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         black_lift_control, self.black_lift = self._create_numeric_control(
             0.00, 0.25, 0.01, 2
         )
+        self.detail_enhance_enabled = Gtk.CheckButton(label="ON")
 
         self._attach_row(grid, 0, "撮影環境", self.environment_combo)
         self._attach_row(grid, 1, "元の色温度 (K)", original_temperature_control)
@@ -104,6 +105,9 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         self._attach_row(grid, 3, "GMA GP", gamma_gp_control)
         self._attach_row(grid, 4, "White Clip", white_clip_control)
         self._attach_row(grid, 5, "Black Lift", black_lift_control)
+        self._attach_row(
+            grid, 6, "Detail Enhance Fx OFF/ON (heavy processing)", self.detail_enhance_enabled
+        )
 
         self._on_environment_changed(self.environment_combo)
         self.original_temperature.set_value(initial_settings["original_temperature"])
@@ -111,6 +115,9 @@ class SakuraSettingsDialog(GimpUi.Dialog):
         self.gamma_gp.set_value(initial_settings["gamma_gp"])
         self.white_clip.set_value(initial_settings["white_clip"])
         self.black_lift.set_value(initial_settings["black_lift"])
+        self.detail_enhance_enabled.set_active(
+            initial_settings["detail_enhance_enabled"]
+        )
 
         self.environment_combo.connect("changed", self._on_environment_changed)
         for widget, setting_name in (
@@ -178,6 +185,7 @@ class SakuraSettingsDialog(GimpUi.Dialog):
             "gamma_gp": self.gamma_gp.get_value(),
             "white_clip": self.white_clip.get_value(),
             "black_lift": self.black_lift.get_value(),
+            "detail_enhance_enabled": self.detail_enhance_enabled.get_active(),
         }
 
 

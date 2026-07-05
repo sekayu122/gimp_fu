@@ -31,6 +31,7 @@ BINARY_NAME = "sakura.py"
 DEFAULT_GAMMA_GP = 1.50
 DEFAULT_WHITE_CLIP = 0.85
 DEFAULT_BLACK_LIFT = 0.03
+DEFAULT_DETAIL_ENHANCE_ENABLED = False
 GAMMA_CURVE_SAMPLES = 256
 DEFAULT_DETAIL_ENHANCE_SETTINGS = {
     "std-dev": 1.2,
@@ -63,6 +64,7 @@ def get_default_settings():
         "gamma_gp": DEFAULT_GAMMA_GP,
         "white_clip": DEFAULT_WHITE_CLIP,
         "black_lift": DEFAULT_BLACK_LIFT,
+        "detail_enhance_enabled": DEFAULT_DETAIL_ENHANCE_ENABLED,
     }
 
 
@@ -293,7 +295,10 @@ def run(procedure, run_mode, image, drawables, config, data):
             background_color_layer, settings
         )
 
-        if run_mode != Gimp.RunMode.INTERACTIVE:
+        if (
+            run_mode != Gimp.RunMode.INTERACTIVE
+            and settings["detail_enhance_enabled"]
+        ):
             add_detail_enhance(background_color_layer)
 
         ### 02・03. 軽量プレビューを作ってから画質調整ダイアログを表示 ###
@@ -321,7 +326,8 @@ def run(procedure, run_mode, image, drawables, config, data):
                 Gimp.displays_flush()
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, None)
 
-            add_detail_enhance(background_color_layer)
+            if settings["detail_enhance_enabled"]:
+                add_detail_enhance(background_color_layer)
 
             # プレビュー中は重い派生処理を行わず、確定後に一度だけ作り直す。
             for layer in reversed(derived_layers):
